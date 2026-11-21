@@ -13,8 +13,9 @@ import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
 object MonitorScheduler {
-    private const val PERIODIC_WORK = "avakin-radar-periodic"
-    private const val MANUAL_WORK = "avakin-radar-manual"
+    const val PERIODIC_WORK = "avakin-radar-periodic"
+    const val MANUAL_WORK = "avakin-radar-manual"
+    const val PROGRESS_PHASE = "progress_phase"
 
     fun enable(context: Context, intervalHours: Long) {
         enqueueManual(context)
