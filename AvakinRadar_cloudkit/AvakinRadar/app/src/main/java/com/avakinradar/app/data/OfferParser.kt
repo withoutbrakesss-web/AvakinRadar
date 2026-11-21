@@ -15,7 +15,8 @@ data class ParseResult(val offers: List<StoreOffer>, val error: String? = null)
 /** Parses only offer details present in the publicly rendered storefront HTML. */
 object OfferParser {
     private const val OFFICIAL_HOST = "store.avakin.com"
-    private val priceRegex = Regex("(?:(?:USD|EUR|GBP|CAD|AUD|JPY|RUB)\\s*(?:[$€£¥₽]\\s*)?[0-9][0-9.,]*|[$€£¥₽]\\s*[0-9][0-9.,\\s]*|[0-9][0-9.,\\s]*\\s*(?:US\\$|USD|EUR|GBP|CAD|AUD|JPY|RUB|€|£|¥|₽|\\$))", RegexOption.IGNORE_CASE)
+    private val leadingPriceRegex = Regex("(?:(?:USD|EUR|GBP|CAD|AUD|JPY|RUB)\\s*(?:[$€£¥₽]\\s*)?|[$€£¥₽])\\s*[0-9][0-9.,]*", RegexOption.IGNORE_CASE)
+    private val trailingPriceRegex = Regex("[0-9][0-9.,]*\\s*(?:US\\$|USD|EUR|GBP|CAD|AUD|JPY|RUB|€|£|¥|₽|\\$)", RegexOption.IGNORE_CASE)
     private val currencyRegex = Regex("(?i)(\\+\\s*)?([0-9][0-9,.\\s]*)\\s*(Crowns?|Avacoins?)")
     private val bonusRegex = Regex("(?i)\\+\\s*([0-9][0-9,.\\s]*)\\s*bonus")
     private val inAppRegex = Regex("(?i)In the app\\s*:\\s*([0-9][0-9,.\\s]*)")
@@ -58,7 +59,7 @@ object OfferParser {
                 val current = card ?: break
                 val text = clean(current.text())
                 val headingCount = current.select("h2, h3, h4, [role=heading]").size
-                if (text.length <= 600 && headingCount <= 1 && priceRegex.containsMatchIn(text)) {
+                if (text.length <= 600 && headingCount <= 1 && hasPrice(text)) {
                     candidate = current
                     break
                 }
@@ -66,7 +67,7 @@ object OfferParser {
             }
             val container = candidate ?: return@forEach
             val text = clean(container.text())
-            val price = priceRegex.findAll(text).lastOrNull()?.value?.let(::clean)
+            val price = findPrice(text)
             val link = (heading.closest("a[href]") ?: container.selectFirst("a[href]"))?.attr("abs:href")
             val offerUrl = (if (link == null) normalizeUrl(pageUrl, pageUrl) else normalizeUrl(link, pageUrl)) ?: return@forEach
             val image = container.selectFirst("img[src], img[data-src]")?.let { it.absUrl("src").ifBlank { it.absUrl("data-src") } }
@@ -148,6 +149,11 @@ object OfferParser {
 
     private fun isRelevant(offer: StoreOffer, text: String): Boolean =
         offer.price != null && (offer.crowns != null || offer.avacoins != null || offer.category == OfferCategory.WEB_EXCLUSIVE || text.contains("bundle", true))
+
+    private fun hasPrice(text: String): Boolean = leadingPriceRegex.containsMatchIn(text) || trailingPriceRegex.containsMatchIn(text)
+
+    private fun findPrice(text: String): String? =
+        (leadingPriceRegex.findAll(text).lastOrNull() ?: trailingPriceRegex.findAll(text).lastOrNull())?.value?.let(::clean)
 
     private fun priority(category: OfferCategory): Int = when (category) {
         OfferCategory.CURRENCY_BUNDLE -> 0
