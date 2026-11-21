@@ -14,7 +14,7 @@ Android app for tracking publicly visible offers in the official Avakin Life web
 
 ## Source and parsing limits
 
-The store renders its catalog with JavaScript. The monitor uses an unauthenticated Android WebView to read the public page after rendering; it does not call private catalog endpoints or bypass CAPTCHA/anti-bot controls. If the page is blocked or no recognizable offer cards are found, the app reports the problem, preserves the last successful snapshot, and does not generate removal events from an empty response. The Store tab opens the official shop in the phone's browser so its mobile layout and purchase links work as intended.
+The store renders its catalog with JavaScript. The monitor uses a separate unauthenticated Android WebView profile to read the public page after rendering; it does not use account cookies, call private catalog endpoints, or bypass CAPTCHA/anti-bot controls. If the page is blocked or no recognizable offer cards are found, the app reports the problem, preserves the last successful snapshot, and does not generate removal events from an empty response. The Store tab uses a full-screen mobile WebView, and the Overview shows live check progress and the last result.
 
 The store can change its page markup and regional catalog. A markup change may require updating `OfferParser`; currency and prices are whatever the public page returns for that request. Background execution timing is also subject to Android and device battery policy.
 
