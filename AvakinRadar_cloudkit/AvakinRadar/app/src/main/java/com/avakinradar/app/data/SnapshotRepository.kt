@@ -72,9 +72,26 @@ class SnapshotRepository(context: Context) : OfferSnapshotStore {
         }.getOrDefault(emptyList())
     }
 
-    override fun beginCheck(timestamp: Long) {
-        val summary = CheckSummary(timestamp, CheckState.RUNNING)
+    override fun beginCheck(timestamp: Long, workId: String?) {
+        val existing = status().lastCheck
+        if (existing?.state == CheckState.RUNNING && existing.workId == workId) return
+        val summary = CheckSummary(timestamp, CheckState.RUNNING, workId = workId)
         preferences.edit().putString(KEY_LAST_RESULT, encodeCheckSummary(summary).toString()).commit()
+    }
+
+    override fun startCheckRequest(timestamp: Long, workId: String) {
+        preferences.edit().putString(KEY_LAST_RESULT, encodeCheckSummary(CheckSummary(
+            checkedAt = timestamp,
+            state = CheckState.RUNNING,
+            events = listOf(CheckEvent(timestamp, "button_pressed", "Пользователь запросил ручную проверку.")),
+            workId = workId
+        )).toString()).commit()
+    }
+
+    override fun appendEvent(event: CheckEvent) {
+        val current = status().lastCheck ?: CheckSummary(event.timestamp, CheckState.RUNNING)
+        val next = current.copy(events = (current.events + event).takeLast(MAX_CHECK_EVENTS))
+        preferences.edit().putString(KEY_LAST_RESULT, encodeCheckSummary(next).toString()).commit()
     }
 
     override fun saveSuccess(offers: List<StoreOffer>, changes: List<OfferChange>, summary: CheckSummary) {
@@ -82,12 +99,14 @@ class SnapshotRepository(context: Context) : OfferSnapshotStore {
         val nextHistory = (changes.map { OfferJson.encodeChange(it) } + history(250).map { OfferJson.encodeChange(it) }).take(250)
         val snapshot = JSONArray().apply { offers.forEach { put(OfferJson.encode(it)) } }
         val historyJson = JSONArray().apply { nextHistory.forEach { put(it) } }
+        val savedEvent = CheckEvent(summary.checkedAt, "result_saved", "Снимок из ${offers.size} карточек и статистика сохранены.")
+        val latest = summary.copy(events = (status().lastCheck?.events.orEmpty() + summary.events + savedEvent).distinctBy { "${it.timestamp}:${it.stage}" }.takeLast(MAX_CHECK_EVENTS))
         preferences.edit()
             .putString(KEY_SNAPSHOT, snapshot.toString())
             .putString(KEY_HISTORY, historyJson.toString())
             .putLong(KEY_LAST_CHECKED, summary.checkedAt)
             .putLong(KEY_LAST_SUCCESS, summary.checkedAt)
-            .putString(KEY_LAST_RESULT, encodeCheckSummary(summary).toString())
+            .putString(KEY_LAST_RESULT, encodeCheckSummary(latest).toString())
             .remove(KEY_LAST_ERROR)
             .commit()
     }
@@ -95,10 +114,11 @@ class SnapshotRepository(context: Context) : OfferSnapshotStore {
     override fun saveFailure(summary: CheckSummary) {
         require(summary.state == CheckState.FAILED)
         val message = summary.error ?: "Не удалось проверить публичный каталог."
+        val latest = summary.copy(events = (status().lastCheck?.events.orEmpty() + summary.events).distinctBy { "${it.timestamp}:${it.stage}" }.takeLast(MAX_CHECK_EVENTS))
         preferences.edit()
             .putLong(KEY_LAST_CHECKED, summary.checkedAt)
             .putString(KEY_LAST_ERROR, message.take(350))
-            .putString(KEY_LAST_RESULT, encodeCheckSummary(summary).toString())
+            .putString(KEY_LAST_RESULT, encodeCheckSummary(latest).toString())
             .commit()
     }
 
@@ -115,6 +135,7 @@ class SnapshotRepository(context: Context) : OfferSnapshotStore {
         const val KEY_LAST_SUCCESS = "last_success"
         const val KEY_LAST_ERROR = "last_error"
         const val KEY_LAST_RESULT = "last_check_result"
+        const val MAX_CHECK_EVENTS = 80
     }
 }
 
@@ -125,7 +146,10 @@ private fun encodeCheckSummary(value: CheckSummary) = JSONObject().apply {
     put("newCount", value.newCount)
     put("changedCount", value.changedCount)
     put("removedCount", value.removedCount)
+    put("unchangedCount", value.unchangedCount)
+    value.workId?.let { put("workId", it) }
     value.error?.let { put("error", it) }
+    put("events", JSONArray().apply { value.events.forEach { event -> put(JSONObject().apply { put("timestamp", event.timestamp); put("stage", event.stage); put("message", event.message) }) } })
 }
 
 private fun decodeCheckSummary(raw: String): CheckSummary? = runCatching {
@@ -137,7 +161,12 @@ private fun decodeCheckSummary(raw: String): CheckSummary? = runCatching {
         newCount = json.optInt("newCount"),
         changedCount = json.optInt("changedCount"),
         removedCount = json.optInt("removedCount"),
-        error = json.optString("error").takeIf(String::isNotBlank)
+        error = json.optString("error").takeIf(String::isNotBlank),
+        unchangedCount = json.optInt("unchangedCount"),
+        workId = json.optString("workId").takeIf(String::isNotBlank),
+        events = json.optJSONArray("events")?.let { events -> (0 until events.length()).mapNotNull { index ->
+            events.optJSONObject(index)?.let { CheckEvent(it.optLong("timestamp"), it.optString("stage"), it.optString("message")) }
+        } }.orEmpty()
     )
 }.getOrNull()
 
@@ -202,4 +231,3 @@ internal object OfferJson {
     private fun JSONObject.nullableInt(key: String): Int? =
         opt(key)?.takeUnless { it == JSONObject.NULL }?.let { (it as? Number)?.toInt() ?: it.toString().toIntOrNull() }
 }
-
