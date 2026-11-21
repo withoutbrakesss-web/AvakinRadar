@@ -3,6 +3,7 @@ package com.avakinradar.app.monitor
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import com.avakinradar.app.data.OfferDiff
 import com.avakinradar.app.data.RenderedStoreClient
 import com.avakinradar.app.data.SnapshotRepository
@@ -16,8 +17,10 @@ class MonitorWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         if (!manual && !repository.settings().monitoringEnabled) return Result.success()
 
         return try {
+            setProgress(workDataOf(MonitorScheduler.PROGRESS_PHASE to "Загружаю каталог магазина…"))
             val offers = RenderedStoreClient(applicationContext).fetchOffers()
             if (offers.isEmpty()) throw IOException("Магазин не вернул проверяемые предложения; предыдущий снимок сохранён.")
+            setProgress(workDataOf(MonitorScheduler.PROGRESS_PHASE to "Сравниваю ${offers.size} предложений…"))
             val now = System.currentTimeMillis()
             val previous = repository.loadOffers()
             if (OfferDiff.isSuspiciouslyIncomplete(previous, offers)) {
