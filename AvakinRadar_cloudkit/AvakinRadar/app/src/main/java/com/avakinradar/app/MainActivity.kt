@@ -246,6 +246,8 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
                         status = status,
                         checkRunning = checkRunning,
                         checkPhase = checkPhase,
+                        queueWaiting = queueWaiting,
+                        queueWaitSeconds = queueWaitSeconds,
                         terminalWorkMessage = terminalWorkMessage,
                         onSettingsChange = ::updateSettings,
                         onCheckNow = {
@@ -297,6 +299,8 @@ private fun Overview(
     status: MonitorStatus,
     checkRunning: Boolean,
     checkPhase: String,
+    queueWaiting: Boolean,
+    queueWaitSeconds: Int,
     terminalWorkMessage: String?,
     onSettingsChange: (MonitorSettings) -> Unit,
     onCheckNow: () -> Unit,
