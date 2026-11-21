@@ -112,4 +112,3 @@ class OfferParserTest {
         assertEquals("14,99 US$", offer.price)
     }
 }
-
