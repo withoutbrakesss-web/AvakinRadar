@@ -30,7 +30,7 @@ object MonitorScheduler {
     }
 
     fun disable(context: Context) {
-        WorkManager.getInstance(context).cancelUniquePeriodicWork(PERIODIC_WORK)
+        WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK)
         WorkManager.getInstance(context).cancelUniqueWork(MANUAL_WORK)
     }
 

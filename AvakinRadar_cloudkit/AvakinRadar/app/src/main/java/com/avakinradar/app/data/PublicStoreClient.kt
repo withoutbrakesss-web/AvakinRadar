@@ -13,7 +13,9 @@ class PublicStoreClient(
     private val storeUrl: String = STORE_URL,
     private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
 ) {
-    suspend fun fetchOffers(): List<StoreOffer> = withContext(Dispatchers.IO) {
+    suspend fun fetchOffers(): List<StoreOffer> = withContext(Dispatchers.IO) { fetchOffersBlocking() }
+
+    private fun fetchOffersBlocking(): List<StoreOffer> {
         var requestUrl = URL(storeUrl)
         require(requestUrl.protocol == "https" && requestUrl.host.equals("store.avakin.com", true)) {
             "Разрешён только официальный адрес https://store.avakin.com/."
@@ -58,7 +60,7 @@ class PublicStoreClient(
                 val html = output.toString(StandardCharsets.UTF_8.name())
                 val parsed = OfferParser.parse(html, requestUrl.toString())
                 if (parsed.error != null) throw IOException(parsed.error)
-                return@withContext parsed.offers
+                return parsed.offers
             } finally {
                 connection.disconnect()
             }
