@@ -86,6 +86,55 @@ object OfferParser {
             )
             if (isRelevant(offer, text)) output.putIfAbsent(offer.id, offer)
         }
+
+        // Xsolla layouts often use generic div/span elements instead of semantic headings.
+        root.select("a[href]").forEach { anchor ->
+            var current: Element? = anchor.parent()
+            var container: Element? = null
+            for (depth in 0 until 8) {
+                val candidate = current ?: break
+                val text = clean(candidate.text())
+                val currency = currencyData(text)
+                if (text.length in 12..1_200 && hasPrice(text) && (currency.crowns != null || currency.avacoins != null)) {
+                    container = candidate
+                    break
+                }
+                current = candidate.parent()
+            }
+            val card = container ?: return@forEach
+            val text = clean(card.text())
+            val title = card.selectFirst("h1, h2, h3, h4, [role=heading]")?.let { clean(it.text()) }
+                ?.takeIf { it.length in 2..160 }
+                ?: card.select("span, p, div").asSequence()
+                    .filter { it.children().isEmpty() }
+                    .map { clean(it.text()) }
+                    .firstOrNull { value ->
+                        value.length in 2..160 && !hasPrice(value) && currencyRegex.find(value) == null &&
+                            !value.contains("sign in", true) && !value.contains("log in", true) &&
+                            !value.contains("buy", true) && !value.contains("purchase", true)
+                    }
+                ?: return@forEach
+            if (output.values.any { it.title.equals(title, ignoreCase = true) }) return@forEach
+            val link = anchor.attr("abs:href")
+            val offerUrl = normalizeUrl(link, pageUrl) ?: return@forEach
+            val details = currencyData(text)
+            val price = findPrice(text)
+            val image = card.selectFirst("img[src], img[data-src]")?.let { it.absUrl("src").ifBlank { it.absUrl("data-src") } }
+            val offer = StoreOffer(
+                id = stableId(link, title), title = title, price = price,
+                priceCurrency = currencyCode(price), crowns = details.crowns, avacoins = details.avacoins,
+                bonus = bonusRegex.find(text)?.groupValues?.getOrNull(1)?.toIntOrNullSafe(),
+                inAppAmount = inAppRegex.find(text)?.groupValues?.getOrNull(1)?.toIntOrNullSafe(),
+                description = text.takeIf { it != title }?.take(500), url = offerUrl,
+                imageUrl = image?.takeIf { it.startsWith("https://") },
+                category = category(text, details.crowns, details.avacoins),
+                webExclusive = text.contains("web exclusive", true),
+                expiresAt = card.selectFirst("time[datetime], [data-end-time], [data-expiry]")?.let { element ->
+                    element.attr("datetime").ifBlank { element.attr("data-end-time") }.ifBlank { element.attr("data-expiry") }.takeIf(String::isNotBlank)
+                }
+            )
+            if (isRelevant(offer, text)) output.putIfAbsent(offer.id, offer)
+        }
     }
 
     private fun extractJsonLd(value: Any?, pageUrl: String, output: MutableMap<String, StoreOffer>) {
