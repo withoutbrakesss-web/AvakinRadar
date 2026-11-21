@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.avakinradar.app.data.OfferDiff
-import com.avakinradar.app.data.PublicStoreClient
+import com.avakinradar.app.data.RenderedStoreClient
 import com.avakinradar.app.data.SnapshotRepository
 import kotlinx.coroutines.CancellationException
 import java.io.IOException
@@ -16,7 +16,7 @@ class MonitorWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         if (!manual && !repository.settings().monitoringEnabled) return Result.success()
 
         return try {
-            val offers = PublicStoreClient().fetchOffers()
+            val offers = RenderedStoreClient(applicationContext).fetchOffers()
             if (offers.isEmpty()) throw IOException("Магазин не вернул проверяемые предложения; предыдущий снимок сохранён.")
             val now = System.currentTimeMillis()
             val previous = repository.loadOffers()
@@ -40,3 +40,4 @@ class MonitorWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         private const val MAX_RETRIES = 3
     }
 }
+
