@@ -38,7 +38,7 @@ object OfferParser {
         val offers = found.values.sortedWith(compareBy<StoreOffer> { priority(it.category) }.thenBy { it.title.lowercase(Locale.ROOT) })
         if (offers.isEmpty()) {
             val message = if (document.select("script").size > 2) {
-                "Магазин загрузил страницу, но его предложения не видны в публичном HTML. Снимок не обновлён, чтобы не создавать ложные события."
+                "Каталог магазина загружается JavaScript-кодом после открытия страницы; в исходном HTML карточек нет. Эта проверка пока не может прочитать отрисованный каталог. Снимок не обновлён."
             } else {
                 "В открытой странице магазина не найдено предложений. Проверьте соединение и повторите попытку."
             }
@@ -198,3 +198,4 @@ object OfferParser {
     private fun clean(text: String): String = text.replace(Regex("\\s+"), " ").trim()
     private fun String.toIntOrNullSafe(): Int? = filter(Char::isDigit).toIntOrNull()
 }
+
