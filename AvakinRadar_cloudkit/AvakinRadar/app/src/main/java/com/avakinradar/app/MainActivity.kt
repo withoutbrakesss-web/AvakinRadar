@@ -4,13 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.view.ViewGroup
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Radar
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingBag
 import androidx.compose.material3.*
@@ -37,7 +33,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.avakinradar.app.data.MonitorSettings
@@ -78,34 +73,18 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var requestedStoreUrl by remember { mutableStateOf("https://store.avakin.com/") }
     var revision by remember { mutableIntStateOf(0) }
-    var storeLoading by remember { mutableStateOf(true) }
-    var storeError by remember { mutableStateOf<String?>(null) }
-    val webView = remember(context) { WebView(context) }
 
     DisposableEffect(repository.preferences) {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
         repository.preferences.registerOnSharedPreferenceChangeListener(listener)
         onDispose { repository.preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
-    DisposableEffect(webView) {
-        configureWebView(context, webView, { storeLoading = it }, { storeError = it })
-        onDispose {
-            webView.stopLoading()
-            webView.webChromeClient = null
-            webView.webViewClient = WebViewClient()
-            (webView.parent as? ViewGroup)?.removeView(webView)
-            webView.destroy()
-        }
-    }
-
     val settings = remember(revision) { repository.settings() }
     val offers = remember(revision) { repository.loadOffers().orEmpty() }
     val history = remember(revision) { repository.history() }
     val status = remember(revision) { repository.status() }
 
-    BackHandler(enabled = selectedTab == 3) {
-        if (webView.canGoBack()) webView.goBack() else selectedTab = 0
-    }
+    BackHandler(enabled = selectedTab == 3) { selectedTab = 0 }
 
     fun updateSettings(next: MonitorSettings) {
         repository.updateSettings(next)
@@ -140,12 +119,15 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
                         offers = offers,
                         status = status,
                         onSettingsChange = ::updateSettings,
-                        onCheckNow = { MonitorScheduler.enqueueManual(context) },
-                        onOpenOffer = { url -> webView.tag = null; requestedStoreUrl = url; selectedTab = 3 }
+                        onCheckNow = {
+                            MonitorScheduler.enqueueManual(context)
+                            Toast.makeText(context, "Проверка магазина запущена.", Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenOffer = { url -> openStoreUrl(context, url) }
                     )
-                    1 -> HistoryScreen(history, onOpenOffer = { url -> webView.tag = null; requestedStoreUrl = url; selectedTab = 3 })
-                    2 -> SettingsScreen(settings, onSettingsChange = ::updateSettings, onOpenStore = { webView.tag = null; requestedStoreUrl = "https://store.avakin.com/"; selectedTab = 3 })
-                    else -> StoreScreen(webView, requestedStoreUrl, storeLoading, storeError)
+                    1 -> HistoryScreen(history, onOpenOffer = { url -> openStoreUrl(context, url) })
+                    2 -> SettingsScreen(settings, onSettingsChange = ::updateSettings, onOpenStore = { openStoreUrl(context, "https://store.avakin.com/") })
+                    else -> StoreScreen(requestedStoreUrl) { url -> openStoreUrl(context, url) }
                 }
             }
         }
@@ -205,7 +187,7 @@ private fun Overview(
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Предложения", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                Text("${offers.size}", color = Blue, fontWeight = FontWeight.Bold)
+                Text(if (status.lastSuccessAt == null) "—" else "${offers.size}", color = Blue, fontWeight = FontWeight.Bold)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
                 listOf("Все", "Валюта", "Акции").forEach { option ->
@@ -341,69 +323,32 @@ private fun SettingSwitch(title: String, checked: Boolean, onCheckedChange: (Boo
 }
 
 @Composable
-private fun StoreScreen(webView: WebView, url: String, loading: Boolean, error: String?) {
-    Box(Modifier.fillMaxSize()) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { webView },
-            update = { view -> if (view.tag != url) { view.tag = url; view.loadUrl(url) } }
-        )
-        Surface(Modifier.align(Alignment.TopEnd).padding(10.dp), shape = RoundedCornerShape(24.dp), color = CardColor.copy(alpha = 0.92f)) {
-            IconButton(onClick = { webView.reload() }) {
-                Icon(Icons.Default.Refresh, contentDescription = "Обновить магазин", tint = Color.White)
-            }
-        }
-        if (loading) CircularProgressIndicator(Modifier.align(Alignment.Center), color = Violet)
-        if (error != null) {
-            Card(Modifier.align(Alignment.Center).padding(24.dp), colors = CardDefaults.cardColors(containerColor = CardColor)) {
-                Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Не удалось загрузить магазин", color = Color.White, fontWeight = FontWeight.Bold)
-                    Text(error.orEmpty(), color = Color.LightGray)
-                    Button(onClick = { webView.loadUrl(url) }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Повторить") }
-                }
-            }
-        }
+private fun StoreScreen(url: String, onOpen: (String) -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.ShoppingBag, contentDescription = null, tint = Violet, modifier = Modifier.size(52.dp))
+        Spacer(Modifier.height(16.dp))
+        Text("Магазин Avakin Life", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text("Откроем его в браузере телефона: там каталог и кнопки покупки отображаются в мобильном формате.", color = Color.LightGray)
+        Spacer(Modifier.height(18.dp))
+        Button(onClick = { onOpen(url) }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Открыть магазин") }
     }
 }
 
-private fun configureWebView(context: Context, webView: WebView, onLoading: (Boolean) -> Unit, onError: (String?) -> Unit) {
-    webView.settings.javaScriptEnabled = true
-    webView.settings.useWideViewPort = false
-    webView.settings.loadWithOverviewMode = false
-    webView.settings.textZoom = 100
-    webView.settings.domStorageEnabled = true
-    webView.settings.javaScriptCanOpenWindowsAutomatically = false
-    webView.settings.allowFileAccess = false
-    webView.settings.allowContentAccess = false
-    webView.webChromeClient = object : WebChromeClient() {
-        override fun onProgressChanged(view: WebView?, newProgress: Int) { onLoading(newProgress < 100) }
+private fun openStoreUrl(context: Context, rawUrl: String) {
+    val uri = Uri.parse(rawUrl)
+    if (uri.scheme != "https" || uri.host?.equals("store.avakin.com", ignoreCase = true) != true) {
+        Toast.makeText(context, "Открывается только официальный магазин Avakin.", Toast.LENGTH_SHORT).show()
+        return
     }
-    webView.webViewClient = object : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            val uri = request.url
-            if (uri.scheme == "https" && uri.host.equals("store.avakin.com", true)) return false
-            if (uri.scheme == "https") runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, uri)) }
-            return true
-        }
-
-        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-            onLoading(true)
-            onError(null)
-        }
-
-        override fun onPageFinished(view: WebView?, url: String?) {
-            onLoading(false)
-            if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
-                view?.evaluateJavascript("""(function(){var v=document.querySelector('meta[name=viewport]');if(!v){v=document.createElement('meta');v.name='viewport';document.head.appendChild(v);}v.content='width=device-width, initial-scale=1, viewport-fit=cover';document.documentElement.style.maxWidth='100%';document.body.style.maxWidth='100%';})()""", null)
-            }
-        }
-
-        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: android.webkit.WebResourceError?) {
-            if (request?.isForMainFrame == true) {
-                onLoading(false)
-                onError(error?.description?.toString() ?: "Проверьте подключение к интернету.")
-            }
-        }
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+    } catch (_: Exception) {
+        Toast.makeText(context, "Не найден браузер для открытия магазина.", Toast.LENGTH_LONG).show()
     }
 }
 
