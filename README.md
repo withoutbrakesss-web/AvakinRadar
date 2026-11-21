@@ -14,7 +14,7 @@ Android app for tracking publicly visible offers in the official Avakin Life web
 
 ## Source and parsing limits
 
-The store may render offers with JavaScript. The monitor intentionally reads only public HTML returned by the official HTTPS host and will not emulate a browser, send account cookies, call hidden endpoints, or bypass CAPTCHA/anti-bot controls. If the public response is only a JavaScript shell, is blocked, or contains no recognizable offer cards, the app reports the problem, preserves the last successful snapshot, and does not generate removal events from an empty response. The WebView remains available so the store can be opened normally.
+The store renders its catalog with JavaScript. The monitor uses an unauthenticated Android WebView to read the public page after rendering; it does not call private catalog endpoints or bypass CAPTCHA/anti-bot controls. If the page is blocked or no recognizable offer cards are found, the app reports the problem, preserves the last successful snapshot, and does not generate removal events from an empty response. The Store tab opens the official shop in the phone's browser so its mobile layout and purchase links work as intended.
 
 The store can change its page markup and regional catalog. A markup change may require updating `OfferParser`; currency and prices are whatever the public page returns for that request. Background execution timing is also subject to Android and device battery policy.
 
@@ -30,3 +30,4 @@ gradle testDebugUnitTest assembleDebug
 ```
 
 The debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Debug APKs are for installation/testing and are not a Play Store release build.
+
