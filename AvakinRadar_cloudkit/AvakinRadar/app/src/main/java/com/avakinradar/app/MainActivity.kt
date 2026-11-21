@@ -368,6 +368,9 @@ private fun StoreScreen(webView: WebView, url: String, loading: Boolean, error: 
 
 private fun configureWebView(context: Context, webView: WebView, onLoading: (Boolean) -> Unit, onError: (String?) -> Unit) {
     webView.settings.javaScriptEnabled = true
+    webView.settings.useWideViewPort = false
+    webView.settings.loadWithOverviewMode = false
+    webView.settings.textZoom = 100
     webView.settings.domStorageEnabled = true
     webView.settings.javaScriptCanOpenWindowsAutomatically = false
     webView.settings.allowFileAccess = false
@@ -388,7 +391,12 @@ private fun configureWebView(context: Context, webView: WebView, onLoading: (Boo
             onError(null)
         }
 
-        override fun onPageFinished(view: WebView?, url: String?) { onLoading(false) }
+        override fun onPageFinished(view: WebView?, url: String?) {
+            onLoading(false)
+            if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
+                view?.evaluateJavascript("""(function(){var v=document.querySelector('meta[name=viewport]');if(!v){v=document.createElement('meta');v.name='viewport';document.head.appendChild(v);}v.content='width=device-width, initial-scale=1, viewport-fit=cover';document.documentElement.style.maxWidth='100%';document.body.style.maxWidth='100%';})()""", null)
+            }
+        }
 
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: android.webkit.WebResourceError?) {
             if (request?.isForMainFrame == true) {
@@ -429,3 +437,4 @@ private fun changeDescription(change: OfferChange): String = when (change.type) 
 
 private fun number(value: Int): String = String.format(Locale.getDefault(), "%,d", value)
 private fun formatTime(timestamp: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
+
