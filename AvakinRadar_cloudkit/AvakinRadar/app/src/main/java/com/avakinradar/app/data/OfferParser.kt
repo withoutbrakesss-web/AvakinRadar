@@ -10,7 +10,7 @@ import java.net.URI
 import java.text.Normalizer
 import java.util.Locale
 
-data class ParseResult(val offers: List<StoreOffer>, val error: String? = null)
+data class ParseResult(val offers: List<StoreOffer>, val error: String? = null, val candidateCardCount: Int = 0)
 
 /** Parses only offer details present in the publicly rendered storefront HTML. */
 object OfferParser {
@@ -25,7 +25,7 @@ object OfferParser {
         val document = Jsoup.parse(html, pageUrl)
         if (document.selectFirst("form input[name*=captcha], iframe[src*=captcha], [id*=captcha], [class*=captcha]") != null ||
             document.text().contains("verify you are human", ignoreCase = true)) {
-            return ParseResult(emptyList(), "Магазин попросил пройти проверку доступа. Мониторинг не обходит её.")
+            return ParseResult(emptyList(), "Магазин попросил пройти проверку доступа. Мониторинг не обходит её.", document.select("article.avsp-card[data-sku]").size)
         }
 
         val found = linkedMapOf<String, StoreOffer>()
@@ -33,6 +33,7 @@ object OfferParser {
             runCatching { extractJsonLd(JSONObject(script.data()), pageUrl, found) }
             runCatching { extractJsonLd(JSONArray(script.data()), pageUrl, found) }
         }
+        val candidateCardCount = document.select("article.avsp-card[data-sku]").size
         extractXsollaCards(document.select("article.avsp-card[data-sku]"), pageUrl, found)
         extractHtmlCards(document.select("body").firstOrNull(), pageUrl, found)
 
@@ -43,9 +44,9 @@ object OfferParser {
             } else {
                 "В открытой странице магазина не найдено предложений. Проверьте соединение и повторите попытку."
             }
-            return ParseResult(emptyList(), message)
+            return ParseResult(emptyList(), message, candidateCardCount)
         }
-        return ParseResult(offers)
+        return ParseResult(offers, candidateCardCount = candidateCardCount)
     }
 
     /** Xsolla's live Avakin catalog uses article cards, not semantic headings or product links. */
@@ -291,4 +292,3 @@ object OfferParser {
 
     private inline fun <T : Any> T?.orElse(fallback: () -> T?): T? = this ?: fallback()
 }
-
