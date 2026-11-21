@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Message
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -20,9 +22,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Radar
@@ -54,11 +58,13 @@ import com.avakinradar.app.model.OfferChange
 import com.avakinradar.app.model.OfferCategory
 import com.avakinradar.app.model.StoreOffer
 import com.avakinradar.app.monitor.MonitorScheduler
+import com.avakinradar.app.monitor.MonitorWorker
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,10 +96,17 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
     var storeError by remember { mutableStateOf<String?>(null) }
     var checkRunning by remember { mutableStateOf(false) }
     var checkPhase by remember { mutableStateOf("") }
+    var terminalWorkMessage by remember { mutableStateOf<String?>(null) }
+    var queueWaiting by remember { mutableStateOf(false) }
+    var queueWaitStartedAt by remember { mutableLongStateOf(0L) }
+    var queueWaitSeconds by remember { mutableIntStateOf(0) }
     val webView = remember(context) { WebView(context) }
 
     DisposableEffect(repository.preferences) {
-        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
+        val mainHandler = Handler(Looper.getMainLooper())
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            mainHandler.post { revision++ }
+        }
         repository.preferences.registerOnSharedPreferenceChangeListener(listener)
         onDispose { repository.preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
@@ -108,25 +121,87 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
         }
     }
     LaunchedEffect(context) {
+        MonitorScheduler.cancelLegacyManual(context)
         combine(
             WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(MonitorScheduler.MANUAL_WORK),
             WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(MonitorScheduler.PERIODIC_WORK)
         ) { manual, periodic ->
-            val running = (manual + periodic).firstOrNull { it.state == WorkInfo.State.RUNNING }
+            val requestedId = repository.status().lastCheck?.workId
+            val currentManual = requestedId?.let { id -> manual.firstOrNull { it.id.toString() == id } }
+                ?: manual.firstOrNull { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+            val running = currentManual?.takeIf { it.state == WorkInfo.State.RUNNING }
+                ?: periodic.firstOrNull { it.state == WorkInfo.State.RUNNING }
+            val queued = currentManual?.takeIf { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+            val completed = currentManual?.takeIf { it.state == WorkInfo.State.FAILED || it.state == WorkInfo.State.CANCELLED || it.state == WorkInfo.State.SUCCEEDED }
+            Triple(running, queued, completed)
+        }.collect { (running, queued, completed) ->
             when {
-                running != null -> true to (running.progress.getString(MonitorScheduler.PROGRESS_PHASE) ?: "Проверяю публичный каталог магазина…")
-                manual.any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED } -> true to "Проверка поставлена в очередь…"
-                else -> false to ""
+                running != null -> {
+                    checkRunning = true
+                    queueWaiting = false
+                    checkPhase = running.progress.getString(MonitorScheduler.PROGRESS_PHASE) ?: "Проверка выполняется…"
+                    terminalWorkMessage = null
+                }
+                queued != null -> {
+                    checkRunning = true
+                    if (!queueWaiting) {
+                        queueWaitStartedAt = repository.status().lastCheck?.checkedAt ?: System.currentTimeMillis()
+                        queueWaitSeconds = 0
+                    }
+                    queueWaiting = true
+                    val reason = if (Build.VERSION.SDK_INT >= 31 && queued.runAttemptCount > 0) workStopReason(queued.stopReason) else null
+                    checkPhase = "Android принял задачу (${queued.state}; попытка ${queued.runAttemptCount + 1})." + (reason?.let { " Причина ожидания: $it" } ?: "")
+                    terminalWorkMessage = null
+                }
+                completed != null -> {
+                    checkRunning = false
+                    queueWaiting = false
+                    checkPhase = ""
+                    val currentCheck = repository.status().lastCheck
+                    terminalWorkMessage = null
+                    if (currentCheck?.state == CheckState.RUNNING) {
+                        terminalWorkMessage = when (completed.state) {
+                            WorkInfo.State.FAILED -> completed.outputData.getString(MonitorWorker.ERROR_MESSAGE) ?: "Фоновая задача завершилась без результата."
+                            WorkInfo.State.CANCELLED -> "Проверка была отменена до получения результата."
+                            else -> "Задача завершилась, но исполнитель не сохранил итог проверки."
+                        }
+                        val message = terminalWorkMessage ?: "Задача завершилась, но исполнитель не сохранил итог проверки."
+                        val failed = CheckSummary(System.currentTimeMillis(), CheckState.FAILED, error = message)
+                        repository.saveFailure(failed)
+                        repository.appendEvent(com.avakinradar.app.data.CheckEvent(failed.checkedAt, "worker_terminal_without_result", message))
+                        revision++
+                    }
+                }
+                else -> { checkRunning = false; queueWaiting = false; checkPhase = "" }
             }
-        }.collect { (active, phase) ->
-                checkRunning = active
-                checkPhase = phase
-            }
+        }
+    }
+    LaunchedEffect(queueWaiting, queueWaitStartedAt) {
+        while (queueWaiting) {
+            delay(5_000)
+            queueWaitSeconds = ((System.currentTimeMillis() - queueWaitStartedAt) / 1_000).toInt()
+        }
     }
     val settings = remember(revision) { repository.settings() }
     val offers = remember(revision) { repository.loadOffers().orEmpty() }
     val history = remember(revision) { repository.history() }
     val status = remember(revision) { repository.status() }
+
+    LaunchedEffect(status.lastCheck?.checkedAt, status.lastCheck?.state, checkRunning) {
+        val pending = status.lastCheck?.takeIf { it.state == CheckState.RUNNING } ?: return@LaunchedEffect
+        if (!checkRunning && pending.events.any { it.stage == "button_pressed" }) {
+            delay(25_000)
+            val latest = repository.status().lastCheck
+            if (!checkRunning && latest?.state == CheckState.RUNNING && latest.checkedAt == pending.checkedAt) {
+                val message = "WorkManager не сообщил о запуске задачи в течение 25 секунд. Возможна системная блокировка фоновой работы; повторный снимок не создавался."
+                val failed = CheckSummary(System.currentTimeMillis(), CheckState.FAILED, error = message, workId = pending.workId)
+                repository.saveFailure(failed)
+                repository.appendEvent(com.avakinradar.app.data.CheckEvent(failed.checkedAt, "worker_not_started", message))
+                terminalWorkMessage = message
+                revision++
+            }
+        }
+    }
 
     BackHandler(enabled = selectedTab == 3) {
         if (webView.canGoBack()) webView.goBack() else selectedTab = 0
@@ -171,9 +246,26 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
                         status = status,
                         checkRunning = checkRunning,
                         checkPhase = checkPhase,
+                        terminalWorkMessage = terminalWorkMessage,
                         onSettingsChange = ::updateSettings,
                         onCheckNow = {
-                            MonitorScheduler.enqueueManual(context)
+                            if (!checkRunning) {
+                                terminalWorkMessage = null
+                                runCatching {
+                                    MonitorScheduler.enqueueManual(context) { workId ->
+                                        val requestedAt = System.currentTimeMillis()
+                                        repository.startCheckRequest(requestedAt, workId)
+                                        repository.appendEvent(com.avakinradar.app.data.CheckEvent(System.currentTimeMillis(), "work_enqueued", "Ручная приоритетная задача создана. ID: $workId"))
+                                        checkRunning = true
+                                        checkPhase = "Запускаю приоритетную проверку…"
+                                    }
+                                }.onFailure { error ->
+                                    val failure = CheckSummary(System.currentTimeMillis(), CheckState.FAILED, error = error.message ?: "WorkManager не принял задачу проверки.")
+                                    repository.saveFailure(failure)
+                                    repository.appendEvent(com.avakinradar.app.data.CheckEvent(failure.checkedAt, "enqueue_failed", failure.error.orEmpty()))
+                                    checkRunning = false
+                                }
+                            }
                         },
                         onOpenOffer = { url -> requestedStoreUrl = url; storeError = null; selectedTab = 3 }
                     )
@@ -205,6 +297,7 @@ private fun Overview(
     status: MonitorStatus,
     checkRunning: Boolean,
     checkPhase: String,
+    terminalWorkMessage: String?,
     onSettingsChange: (MonitorSettings) -> Unit,
     onCheckNow: () -> Unit,
     onOpenOffer: (String) -> Unit
@@ -231,7 +324,9 @@ private fun Overview(
                     Text(if (settings.monitoringEnabled) "Проверки включены · каждые ${settings.intervalHours} ч" else "Периодические проверки выключены", color = if (settings.monitoringEnabled) Color(0xFF71E6B0) else Color.LightGray)
                     Text(
                         when {
-                            checkRunning -> checkPhase.ifBlank { "Проверяю публичный каталог магазина…" }
+                            checkRunning -> checkPhase.ifBlank { "Проверяю публичный каталог магазина…" } +
+                                if (queueWaiting && queueWaitSeconds >= 60) " Ожидание уже $queueWaitSeconds сек.; ручная задача не ждёт ограничения сети. Возможно, запуск задерживает управление фоном MIUI." else ""
+                            terminalWorkMessage != null -> terminalWorkMessage
                             else -> statusText(status)
                         },
                         color = if (status.lastError != null && !checkRunning) Color(0xFFFFCC80) else Color.Gray,
@@ -287,6 +382,7 @@ private fun Overview(
 
 @Composable
 private fun CheckSummaryCard(result: CheckSummary) {
+    var showEvents by remember(result.checkedAt) { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = CardColor), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Результат последней проверки", color = Color.White, fontWeight = FontWeight.Bold)
@@ -294,9 +390,10 @@ private fun CheckSummaryCard(result: CheckSummary) {
             if (result.state == CheckState.SUCCEEDED) {
                 Text("Получено предложений: ${result.receivedCount}", color = Color.LightGray)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    CheckMetric("Новые", result.newCount)
-                    CheckMetric("Изменились", result.changedCount)
-                    CheckMetric("Исчезли", result.removedCount)
+                    CheckMetric("Новые", result.newCount, Modifier.weight(1f))
+                    CheckMetric("Изменились", result.changedCount, Modifier.weight(1f))
+                    CheckMetric("Исчезли", result.removedCount, Modifier.weight(1f))
+                    CheckMetric("Без изменений", result.unchangedCount, Modifier.weight(1f))
                 }
             } else if (result.state == CheckState.FAILED) {
                 Text(result.error ?: "Магазин не вернул результат.", color = Color(0xFFFFCC80))
@@ -304,13 +401,26 @@ private fun CheckSummaryCard(result: CheckSummary) {
             } else {
                 Text("Каталог загружается; результат появится здесь.", color = Color.LightGray)
             }
+            if (result.events.isNotEmpty()) {
+                TextButton(onClick = { showEvents = !showEvents }, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (showEvents) "Скрыть этапы проверки" else "Показать этапы проверки (${result.events.size})", color = Violet)
+                }
+                if (showEvents) {
+                    Column(Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        result.events.forEach { event ->
+                            Text("${formatTime(event.timestamp)} · ${checkStageLabel(event.stage)}", color = Blue, style = MaterialTheme.typography.labelSmall)
+                            Text(event.message, color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun CheckMetric(label: String, value: Int) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun CheckMetric(label: String, value: Int, modifier: Modifier = Modifier) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value.toString(), color = Blue, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
         Text(label, color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
     }
@@ -500,7 +610,7 @@ private fun configureWebView(context: Context, webView: WebView, onLoading: (Boo
         override fun onPageFinished(view: WebView?, url: String?) {
             onLoading(false)
             if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
-                view?.evaluateJavascript("""(function(){var m=document.querySelector('meta[name=viewport]');if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}m.content='width=device-width, initial-scale=1, viewport-fit=cover';document.documentElement.style.maxWidth='100vw';document.body.style.maxWidth='100vw';})()""", null)
+                view?.evaluateJavascript("""(function(){var m=document.querySelector('meta[name=viewport]');if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}m.content='width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover';document.documentElement.style.width='100%';document.documentElement.style.maxWidth='100vw';document.body.style.width='100%';document.body.style.maxWidth='100vw';})()""", null)
             }
         }
 
@@ -554,3 +664,31 @@ private fun changeDescription(change: OfferChange): String = when (change.type) 
 private fun number(value: Int): String = String.format(Locale.getDefault(), "%,d", value)
 private fun formatTime(timestamp: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(timestamp))
 
+private fun workStopReason(code: Int): String = when (code) {
+    WorkInfo.STOP_REASON_CONSTRAINT_CONNECTIVITY -> "ограничение сети"
+    WorkInfo.STOP_REASON_BACKGROUND_RESTRICTION -> "ограничение фоновой работы системой"
+    WorkInfo.STOP_REASON_QUOTA -> "лимит ускоренных фоновых задач"
+    WorkInfo.STOP_REASON_DEVICE_STATE -> "режим энергосбережения или Doze"
+    WorkInfo.STOP_REASON_TIMEOUT -> "превышено время выполнения"
+    WorkInfo.STOP_REASON_USER -> "задача остановлена пользователем или системой"
+    else -> "код остановки Android $code"
+}
+
+private fun checkStageLabel(stage: String): String = when (stage) {
+    "button_pressed" -> "Запрос проверки"
+    "work_enqueued" -> "Задача принята WorkManager"
+    "worker_accepted" -> "Исполнитель запущен"
+    "parse_started" -> "Загрузка каталога"
+    "request_sent" -> "HTTP-запрос отправлен"
+    "http_response" -> "Ответ сервера"
+    "webview_requested" -> "Открытие WebView"
+    "webview_started" -> "WebView начал загрузку"
+    "webview_loaded" -> "Страница загружена"
+    "cards_parsed" -> "Карточки обработаны"
+    "parse_completed" -> "Парсер завершил работу"
+    "comparison_started" -> "Сравнение снимков"
+    "comparison_completed" -> "Сравнение завершено"
+    "result_saved" -> "Снимок сохранён"
+    "check_failed", "parse_failed", "webview_http_error", "webview_network_error", "timeout", "enqueue_failed", "worker_stopped", "worker_terminal_without_result" -> "Ошибка"
+    else -> stage
+}
