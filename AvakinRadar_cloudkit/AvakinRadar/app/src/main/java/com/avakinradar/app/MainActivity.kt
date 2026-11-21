@@ -4,9 +4,13 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Message
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -24,6 +28,8 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -33,7 +39,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.getWorkInfosForUniqueWorkFlow
 import coil.compose.AsyncImage
 import com.avakinradar.app.data.MonitorSettings
 import com.avakinradar.app.data.MonitorStatus
@@ -46,6 +56,8 @@ import com.avakinradar.app.monitor.MonitorScheduler
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,18 +85,51 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var requestedStoreUrl by remember { mutableStateOf("https://store.avakin.com/") }
     var revision by remember { mutableIntStateOf(0) }
+    var storeLoading by remember { mutableStateOf(false) }
+    var storeError by remember { mutableStateOf<String?>(null) }
+    var checkRunning by remember { mutableStateOf(false) }
+    var checkPhase by remember { mutableStateOf("") }
+    val webView = remember(context) { WebView(context) }
 
     DisposableEffect(repository.preferences) {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> revision++ }
         repository.preferences.registerOnSharedPreferenceChangeListener(listener)
         onDispose { repository.preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
+    DisposableEffect(webView) {
+        configureWebView(context, webView, { storeLoading = it }, { storeError = it })
+        onDispose {
+            webView.stopLoading()
+            webView.webChromeClient = null
+            webView.webViewClient = WebViewClient()
+            (webView.parent as? android.view.ViewGroup)?.removeView(webView)
+            webView.destroy()
+        }
+    }
+    LaunchedEffect(context) {
+        combine(
+            WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(MonitorScheduler.MANUAL_WORK),
+            WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(MonitorScheduler.PERIODIC_WORK)
+        ) { manual, periodic ->
+            val running = (manual + periodic).firstOrNull { it.state == WorkInfo.State.RUNNING }
+            when {
+                running != null -> true to (running.progress.getString(MonitorScheduler.PROGRESS_PHASE) ?: "Проверяю публичный каталог магазина…")
+                manual.any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED } -> true to "Проверка поставлена в очередь…"
+                else -> false to ""
+            }
+        }.collect { (active, phase) ->
+                checkRunning = active
+                checkPhase = phase
+            }
+    }
     val settings = remember(revision) { repository.settings() }
     val offers = remember(revision) { repository.loadOffers().orEmpty() }
     val history = remember(revision) { repository.history() }
     val status = remember(revision) { repository.status() }
 
-    BackHandler(enabled = selectedTab == 3) { selectedTab = 0 }
+    BackHandler(enabled = selectedTab == 3) {
+        if (webView.canGoBack()) webView.goBack() else selectedTab = 0
+    }
 
     fun updateSettings(next: MonitorSettings) {
         repository.updateSettings(next)
@@ -103,31 +148,37 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
         Scaffold(
             containerColor = Ink,
             bottomBar = {
+                if (selectedTab != 3) {
                 NavigationBar(containerColor = CardColor) {
                     NavigationBarItem(selected = selectedTab == 0, onClick = { selectedTab = 0 }, icon = { Icon(Icons.Default.Radar, null) }, label = { Text("Обзор") })
                     NavigationBarItem(selected = selectedTab == 1, onClick = { selectedTab = 1 }, icon = { Icon(Icons.Default.History, null) }, label = { Text("История") })
                     NavigationBarItem(selected = selectedTab == 2, onClick = { selectedTab = 2 }, icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Настройки") })
-                    NavigationBarItem(selected = selectedTab == 3, onClick = { selectedTab = 3 }, icon = { Icon(Icons.Default.ShoppingBag, null) }, label = { Text("Магазин") })
+                    NavigationBarItem(selected = false, onClick = {
+                        selectedTab = 3
+                        requestedStoreUrl = "https://store.avakin.com/"
+                    }, icon = { Icon(Icons.Default.ShoppingBag, null) }, label = { Text("Магазин") })
+                }
                 }
             }
         ) { padding ->
             Column(Modifier.padding(padding).fillMaxSize()) {
-                Header()
+                if (selectedTab != 3) Header()
                 when (selectedTab) {
                     0 -> Overview(
                         settings = settings,
                         offers = offers,
                         status = status,
+                        checkRunning = checkRunning,
+                        checkPhase = checkPhase,
                         onSettingsChange = ::updateSettings,
                         onCheckNow = {
                             MonitorScheduler.enqueueManual(context)
-                            Toast.makeText(context, "Проверка магазина запущена.", Toast.LENGTH_SHORT).show()
                         },
-                        onOpenOffer = { url -> openStoreUrl(context, url) }
+                        onOpenOffer = { url -> requestedStoreUrl = url; storeError = null; selectedTab = 3 }
                     )
-                    1 -> HistoryScreen(history, onOpenOffer = { url -> openStoreUrl(context, url) })
-                    2 -> SettingsScreen(settings, onSettingsChange = ::updateSettings, onOpenStore = { openStoreUrl(context, "https://store.avakin.com/") })
-                    else -> StoreScreen(requestedStoreUrl) { url -> openStoreUrl(context, url) }
+                    1 -> HistoryScreen(history, onOpenOffer = { url -> requestedStoreUrl = url; storeError = null; selectedTab = 3 })
+                    2 -> SettingsScreen(settings, onSettingsChange = ::updateSettings, onOpenStore = { requestedStoreUrl = "https://store.avakin.com/"; storeError = null; selectedTab = 3 })
+                    else -> StoreScreen(webView, requestedStoreUrl, storeLoading, storeError, onBack = { selectedTab = 0 })
                 }
             }
         }
@@ -151,6 +202,8 @@ private fun Overview(
     settings: MonitorSettings,
     offers: List<StoreOffer>,
     status: MonitorStatus,
+    checkRunning: Boolean,
+    checkPhase: String,
     onSettingsChange: (MonitorSettings) -> Unit,
     onCheckNow: () -> Unit,
     onOpenOffer: (String) -> Unit
@@ -175,7 +228,15 @@ private fun Overview(
                         Switch(checked = settings.monitoringEnabled, onCheckedChange = { onSettingsChange(settings.copy(monitoringEnabled = it)) })
                     }
                     Text(if (settings.monitoringEnabled) "Проверки включены · каждые ${settings.intervalHours} ч" else "Периодические проверки выключены", color = if (settings.monitoringEnabled) Color(0xFF71E6B0) else Color.LightGray)
-                    Text(statusText(status), color = if (status.lastError != null) Color(0xFFFFCC80) else Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        when {
+                            checkRunning -> checkPhase.ifBlank { "Проверяю публичный каталог магазина…" }
+                            else -> statusText(status)
+                        },
+                        color = if (status.lastError != null && !checkRunning) Color(0xFFFFCC80) else Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (checkRunning) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Violet)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onCheckNow, colors = ButtonDefaults.buttonColors(containerColor = Violet), modifier = Modifier.weight(1f)) { Text("Проверить сейчас") }
@@ -323,32 +384,104 @@ private fun SettingSwitch(title: String, checked: Boolean, onCheckedChange: (Boo
 }
 
 @Composable
-private fun StoreScreen(url: String, onOpen: (String) -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(Icons.Default.ShoppingBag, contentDescription = null, tint = Violet, modifier = Modifier.size(52.dp))
-        Spacer(Modifier.height(16.dp))
-        Text("Магазин Avakin Life", color = Color.White, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
-        Text("Откроем его в браузере телефона: там каталог и кнопки покупки отображаются в мобильном формате.", color = Color.LightGray)
-        Spacer(Modifier.height(18.dp))
-        Button(onClick = { onOpen(url) }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Открыть магазин") }
+private fun StoreScreen(webView: WebView, url: String, loading: Boolean, error: String?, onBack: () -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().background(CardColor), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White) }
+            Text("Магазин Avakin", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            if (loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Violet)
+            IconButton(onClick = { webView.reload() }) { Icon(Icons.Default.Refresh, contentDescription = "Обновить", tint = Color.White) }
+        }
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { webView },
+                update = { view -> if (view.tag != url) { view.tag = url; view.loadUrl(url) } }
+            )
+            if (error != null) {
+                Card(Modifier.align(Alignment.Center).padding(24.dp), colors = CardDefaults.cardColors(containerColor = CardColor)) {
+                    Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Магазин не загрузился", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(error, color = Color.LightGray)
+                        Button(onClick = { webView.loadUrl(url) }, colors = ButtonDefaults.buttonColors(containerColor = Violet)) { Text("Повторить") }
+                    }
+                }
+            }
+        }
     }
 }
 
-private fun openStoreUrl(context: Context, rawUrl: String) {
-    val uri = Uri.parse(rawUrl)
-    if (uri.scheme != "https" || uri.host?.equals("store.avakin.com", ignoreCase = true) != true) {
-        Toast.makeText(context, "Открывается только официальный магазин Avakin.", Toast.LENGTH_SHORT).show()
-        return
+private fun configureWebView(context: Context, webView: WebView, onLoading: (Boolean) -> Unit, onError: (String?) -> Unit) {
+    webView.settings.javaScriptEnabled = true
+    webView.settings.domStorageEnabled = true
+    webView.settings.javaScriptCanOpenWindowsAutomatically = false
+    webView.settings.setSupportMultipleWindows(true)
+    webView.settings.useWideViewPort = true
+    webView.settings.loadWithOverviewMode = false
+    webView.settings.textZoom = 100
+    webView.settings.allowFileAccess = false
+    webView.settings.allowContentAccess = false
+    webView.settings.userAgentString = webView.settings.userAgentString
+        .replace("; wv", "", ignoreCase = true)
+        .replace("Version/4.0 ", "", ignoreCase = true)
+    webView.webChromeClient = object : WebChromeClient() {
+        override fun onProgressChanged(view: WebView?, newProgress: Int) { onLoading(newProgress < 100) }
+
+        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+            val popup = WebView(context)
+            popup.settings.javaScriptEnabled = true
+            popup.settings.domStorageEnabled = true
+            popup.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(popupView: WebView, request: WebResourceRequest): Boolean {
+                    val uri = request.url
+                    if (uri.scheme != "https") return true
+                    if (uri.host.equals("store.avakin.com", ignoreCase = true)) webView.loadUrl(uri.toString())
+                    else openExternalHttps(context, uri.toString(), onError)
+                    popupView.destroy()
+                    return true
+                }
+            }
+            (resultMsg.obj as? WebView.WebViewTransport)?.webView = popup
+            resultMsg.sendToTarget()
+            return true
+        }
     }
+    webView.webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            val uri = request.url
+            if (uri.scheme == "https" && uri.host.equals("store.avakin.com", true)) return false
+            if (uri.scheme == "https") openExternalHttps(context, uri.toString(), onError)
+            return true
+        }
+
+        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+            onLoading(true)
+            onError(null)
+        }
+
+        override fun onPageFinished(view: WebView?, url: String?) {
+            onLoading(false)
+            if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
+                view?.evaluateJavascript("""(function(){var m=document.querySelector('meta[name=viewport]');if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}m.content='width=device-width, initial-scale=1, viewport-fit=cover';document.documentElement.style.maxWidth='100vw';document.body.style.maxWidth='100vw';})()""", null)
+            }
+        }
+
+        override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: android.webkit.WebResourceError?) {
+            if (request?.isForMainFrame == true) {
+                onLoading(false)
+                onError(error?.description?.toString() ?: "Проверьте подключение к интернету.")
+            }
+        }
+    }
+}
+
+private fun openExternalHttps(context: Context, rawUrl: String, onError: (String?) -> Unit) {
+    val uri = runCatching { android.net.Uri.parse(rawUrl) }.getOrNull()
+    if (uri?.scheme != "https") return
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, uri))
     } catch (_: Exception) {
-        Toast.makeText(context, "Не найден браузер для открытия магазина.", Toast.LENGTH_LONG).show()
+        onError("Ссылка требует внешний браузер, но Android не нашёл приложение для её открытия.")
     }
 }
 
