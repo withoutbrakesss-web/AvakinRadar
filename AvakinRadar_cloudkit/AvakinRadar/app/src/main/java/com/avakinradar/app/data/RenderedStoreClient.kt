@@ -2,11 +2,12 @@ package com.avakinradar.app.data
 
 import android.content.Context
 import android.os.SystemClock
-import android.webkit.CookieManager
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -27,6 +28,17 @@ class RenderedStoreClient(context: Context) {
                 val webView = WebView(appContext)
                 val finished = AtomicBoolean(false)
                 val startedAt = SystemClock.elapsedRealtime()
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                    webView.destroy()
+                    continuation.resumeWithException(IOException("Системный браузер Android устарел: обновите Android System WebView, чтобы безопасно проверить публичный каталог."))
+                    return@suspendCancellableCoroutine
+                }
+                runCatching { WebViewCompat.setProfile(webView, "avakin-radar-public") }
+                    .onFailure {
+                        webView.destroy()
+                        continuation.resumeWithException(IOException("Не удалось открыть изолированную сессию публичного магазина."))
+                        return@suspendCancellableCoroutine
+                    }
 
                 fun finish(offers: List<com.avakinradar.app.model.StoreOffer>?, error: Throwable?) {
                     if (!finished.compareAndSet(false, true)) return
@@ -54,7 +66,7 @@ class RenderedStoreClient(context: Context) {
                     }
                 }
 
-                CookieManager.getInstance().setAcceptCookie(false)
+                WebViewCompat.getProfile(webView).cookieManager.setAcceptCookie(false)
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
                 webView.settings.useWideViewPort = false
