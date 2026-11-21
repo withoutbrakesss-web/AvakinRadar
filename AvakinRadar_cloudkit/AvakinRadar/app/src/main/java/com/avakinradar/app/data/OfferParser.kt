@@ -18,8 +18,8 @@ object OfferParser {
     private val leadingPriceRegex = Regex("(?:(?:USD|EUR|GBP|CAD|AUD|JPY|RUB)\\s*(?:[$€£¥₽]\\s*)?|[$€£¥₽])\\s*[0-9][0-9.,]*", RegexOption.IGNORE_CASE)
     private val trailingPriceRegex = Regex("[0-9][0-9.,]*\\s*(?:US\\$|USD|EUR|GBP|CAD|AUD|JPY|RUB|€|£|¥|₽|\\$)", RegexOption.IGNORE_CASE)
     private val currencyRegex = Regex("(?i)(\\+\\s*)?([0-9][0-9,.\\s]*)\\s*(Crowns?|Avacoins?)")
-    private val bonusRegex = Regex("(?i)\\+\\s*([0-9][0-9,.\\s]*)\\s*bonus")
-    private val inAppRegex = Regex("(?i)In the app\\s*:\\s*([0-9][0-9,.\\s]*)")
+    private val bonusRegex = Regex("(?i)\\+\\s*([0-9][0-9,.\\s]*)\\s*(?:bonus|бонус)")
+    private val inAppRegex = Regex("(?i)(?:In the app|В приложении)\\s*:\\s*[\\u2068\\u2069\\u200e\\u200f]*([0-9][0-9,.\\s\\u00a0\\u202f]*)")
 
     fun parse(html: String, pageUrl: String = "https://store.avakin.com/"): ParseResult {
         val document = Jsoup.parse(html, pageUrl)
@@ -33,18 +33,58 @@ object OfferParser {
             runCatching { extractJsonLd(JSONObject(script.data()), pageUrl, found) }
             runCatching { extractJsonLd(JSONArray(script.data()), pageUrl, found) }
         }
+        extractXsollaCards(document.select("article.avsp-card[data-sku]"), pageUrl, found)
         extractHtmlCards(document.select("body").firstOrNull(), pageUrl, found)
 
         val offers = found.values.sortedWith(compareBy<StoreOffer> { priority(it.category) }.thenBy { it.title.lowercase(Locale.ROOT) })
         if (offers.isEmpty()) {
             val message = if (document.select("script").size > 2) {
-                "Каталог магазина загружается JavaScript-кодом после открытия страницы; в исходном HTML карточек нет. Эта проверка пока не может прочитать отрисованный каталог. Снимок не обновлён."
+                "Страница загрузилась, но в отрисованном каталоге не найдены поддерживаемые карточки предложений. Структура магазина могла измениться; снимок не обновлён."
             } else {
                 "В открытой странице магазина не найдено предложений. Проверьте соединение и повторите попытку."
             }
             return ParseResult(emptyList(), message)
         }
         return ParseResult(offers)
+    }
+
+    /** Xsolla's live Avakin catalog uses article cards, not semantic headings or product links. */
+    private fun extractXsollaCards(cards: List<Element>, pageUrl: String, output: MutableMap<String, StoreOffer>) {
+        cards.forEach { card ->
+            val sku = card.attr("data-sku").trim()
+            val title = clean(card.attr("aria-label").ifBlank {
+                card.selectFirst(".avsp-name bdi, .avsp-name")?.text().orEmpty()
+            })
+            val cardText = clean(card.text())
+            val priceText = clean(card.selectFirst(".avsp-act")?.text().orEmpty())
+            val price = findPrice(priceText).orElse { findPrice(cardText) }
+            val url = normalizeUrl(pageUrl, pageUrl)
+            if (sku.isBlank() || title.length !in 2..160 || price == null || url == null) return@forEach
+
+            val detailsText = clean(card.selectFirst(".avsp-artbox")?.text().orEmpty() + " " + card.selectFirst(".avsp-vrow")?.text().orEmpty())
+            val amounts = currencyData(detailsText)
+            val exclusive = card.classNames().any { it.contains("webx", true) } ||
+                cardText.contains("web exclusive", true) || cardText.contains("эксклюзив веб-магазина", true)
+            val actualCategory = category(if (exclusive) "$cardText web exclusive" else cardText, amounts.crowns, amounts.avacoins)
+            val image = card.selectFirst(".avsp-art img[src], .avsp-art img[data-src]")?.let {
+                it.absUrl("src").ifBlank { it.absUrl("data-src") }
+            }
+            output.putIfAbsent(sku, StoreOffer(
+                id = sku,
+                title = title,
+                price = price,
+                priceCurrency = currencyCode(price),
+                crowns = amounts.crowns,
+                avacoins = amounts.avacoins,
+                bonus = bonusRegex.find(detailsText)?.groupValues?.getOrNull(1)?.toIntOrNullSafe(),
+                inAppAmount = inAppRegex.find(detailsText)?.groupValues?.getOrNull(1)?.toIntOrNullSafe(),
+                description = detailsText.takeIf(String::isNotBlank)?.take(500),
+                url = url,
+                imageUrl = image?.takeIf { it.startsWith("https://") },
+                category = actualCategory,
+                webExclusive = exclusive
+            ))
+        }
     }
 
     private fun extractHtmlCards(root: Element?, pageUrl: String, output: MutableMap<String, StoreOffer>) {
@@ -244,7 +284,11 @@ object OfferParser {
         else -> Regex("(?i)\\b(USD|EUR|GBP|CAD|AUD|JPY|RUB)\\b").find(price)?.groupValues?.get(1)?.uppercase(Locale.ROOT)
     }
 
-    private fun clean(text: String): String = text.replace(Regex("\\s+"), " ").trim()
+    private fun clean(text: String): String = text
+        .replace('\u00a0', ' ').replace('\u202f', ' ').replace('\u2068', ' ').replace('\u2069', ' ')
+        .replace(Regex("\\s+"), " ").trim()
     private fun String.toIntOrNullSafe(): Int? = filter(Char::isDigit).toIntOrNull()
+
+    private inline fun <T : Any> T?.orElse(fallback: () -> T?): T? = this ?: fallback()
 }
 

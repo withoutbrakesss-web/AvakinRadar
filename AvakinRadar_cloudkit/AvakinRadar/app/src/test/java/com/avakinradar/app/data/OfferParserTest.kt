@@ -9,6 +9,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OfferParserTest {
+    @Test fun parsesLiveXsollaArticleCardsWithSkuAndRussianLabels() {
+        val cards = (1..6).joinToString("") { index ->
+            val name = if (index == 1) "Стиль Пугала" else "Публичное предложение $index"
+            """<article class="avsp-card has-pop" data-sku="sku-$index" aria-label="$name" role="button">
+                <div class="avsp-artbox">1&nbsp;295 Crowns ♀♂</div>
+                <div class="avsp-name"><bdi>$name</bdi></div>
+                <div class="avsp-vrow is-c-crown">+120 бонус В приложении: ⁨1&nbsp;175⁩</div>
+                <div class="avsp-act">37,99&nbsp;€</div>
+                <div class="avsp-hint">Войди, чтобы купить</div>
+                <div class="avsp-art"><img src="https://cdn.xsolla.net/catalog/$index.png"></div>
+            </article>"""
+        }
+        val parsed = OfferParser.parse("<html><body>$cards</body></html>", "https://store.avakin.com/ru-RU")
+
+        assertEquals(6, parsed.offers.size)
+        val first = parsed.offers.first { it.id == "sku-1" }
+        assertEquals("Стиль Пугала", first.title)
+        assertEquals(1295, first.crowns)
+        assertEquals(120, first.bonus)
+        assertEquals(1175, first.inAppAmount)
+        assertEquals("37,99 €", first.price)
+        assertEquals("EUR", first.priceCurrency)
+        assertEquals("https://store.avakin.com/ru-RU", first.url)
+        assertEquals("https://cdn.xsolla.net/catalog/1.png", first.imageUrl)
+    }
+
     @Test fun parsesPublicCurrencyCardAndNormalizesAmounts() {
         val result = OfferParser.parse(
             """
@@ -86,3 +112,4 @@ class OfferParserTest {
         assertEquals("14,99 US$", offer.price)
     }
 }
+

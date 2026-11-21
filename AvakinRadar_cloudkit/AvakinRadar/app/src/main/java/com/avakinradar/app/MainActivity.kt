@@ -46,6 +46,8 @@ import androidx.work.WorkManager
 import coil.compose.AsyncImage
 import com.avakinradar.app.data.MonitorSettings
 import com.avakinradar.app.data.MonitorStatus
+import com.avakinradar.app.data.CheckState
+import com.avakinradar.app.data.CheckSummary
 import com.avakinradar.app.data.SnapshotRepository
 import com.avakinradar.app.model.ChangeType
 import com.avakinradar.app.model.OfferChange
@@ -238,11 +240,17 @@ private fun Overview(
                     if (checkRunning) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Violet)
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onCheckNow, colors = ButtonDefaults.buttonColors(containerColor = Violet), modifier = Modifier.weight(1f)) { Text("Проверить сейчас") }
+                        Button(onClick = onCheckNow, enabled = !checkRunning, colors = ButtonDefaults.buttonColors(containerColor = Violet), modifier = Modifier.weight(1f)) {
+                            if (checkRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                            else Text("Проверить предложения")
+                        }
                         OutlinedButton(onClick = { onOpenOffer("https://store.avakin.com/") }, modifier = Modifier.weight(1f)) { Text("Открыть магазин") }
                     }
                 }
             }
+        }
+        status.lastCheck?.let { lastCheck ->
+            item { CheckSummaryCard(lastCheck) }
         }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -274,6 +282,37 @@ private fun Overview(
                 color = Color.Gray, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun CheckSummaryCard(result: CheckSummary) {
+    Card(colors = CardDefaults.cardColors(containerColor = CardColor), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Результат последней проверки", color = Color.White, fontWeight = FontWeight.Bold)
+            Text("${formatTime(result.checkedAt)} · ${if (result.state == CheckState.SUCCEEDED) "успешно" else if (result.state == CheckState.RUNNING) "выполняется" else "ошибка"}", color = if (result.state == CheckState.SUCCEEDED) Color(0xFF71E6B0) else Color(0xFFFFCC80))
+            if (result.state == CheckState.SUCCEEDED) {
+                Text("Получено предложений: ${result.receivedCount}", color = Color.LightGray)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    CheckMetric("Новые", result.newCount)
+                    CheckMetric("Изменились", result.changedCount)
+                    CheckMetric("Исчезли", result.removedCount)
+                }
+            } else if (result.state == CheckState.FAILED) {
+                Text(result.error ?: "Магазин не вернул результат.", color = Color(0xFFFFCC80))
+                Text("Предыдущий корректный снимок сохранён.", color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
+            } else {
+                Text("Каталог загружается; результат появится здесь.", color = Color.LightGray)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CheckMetric(label: String, value: Int) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value.toString(), color = Blue, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+        Text(label, color = Color.LightGray, style = MaterialTheme.typography.bodySmall)
     }
 }
 
