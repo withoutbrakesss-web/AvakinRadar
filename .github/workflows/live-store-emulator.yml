@@ -2,6 +2,13 @@ name: Live public catalog emulator test
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "AvakinRadar_cloudkit/AvakinRadar/app/**"
+      - "AvakinRadar_cloudkit/AvakinRadar/build.gradle.kts"
+      - "AvakinRadar_cloudkit/AvakinRadar/settings.gradle.kts"
+      - ".github/workflows/live-store-emulator.yml"
 
 permissions:
   contents: read
