@@ -18,7 +18,7 @@ class OfferCheckPipelineTest {
 
         assertEquals(CheckState.SUCCEEDED, first.summary.state)
         assertEquals(6, first.summary.receivedCount)
-        assertEquals(6, first.summary.newCount) // first successful catalog establishes the known baseline
+        assertEquals(0, first.summary.newCount) // baseline items are not alert-worthy new offers\n        assertEquals(6, first.summary.unchangedCount) // all baseline cards are known after capture
         assertEquals(initial.map { it.id }.toSet(), store.snapshot!!.map { it.id }.toSet())
 
         val next = listOf(offer(1, price = "8,99 €")) + (2..5).map { offer(it) } + offer(7)
