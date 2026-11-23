@@ -31,3 +31,23 @@ The worker is being stopped by Android/HyperOS while the hidden WebView is waiti
 
 ## Privacy/safety
 Only the public official store is used. No account sign-in, cookies, CAPTCHA/access-control bypass, private API probing, personal data collection, or purchase flow.
+
+
+## Store tab visual defect — additional evidence from screenshot and code inspection
+- The visible Store WebView has settings `useWideViewPort=true`, `loadWithOverviewMode=false`, textZoom 100%, and removes the Android WebView marker from the user-agent. On page finish it injects a viewport meta tag and forces `documentElement` and `body` width/max-width to 100%/100vw.
+- Screenshot shows store category navigation expanded as an overlay and product cards compressed into narrow vertical strips. Product image, title and description are clipped/truncated, and multiple cards overlap visually.
+- Likely causes to test (not confirmed): the store uses desktop/tablet breakpoint or a horizontally scrollable/columns layout in this embedded WebView; injected body/document width rules may interfere with its own responsive CSS; the in-app WebView user-agent may cause a different layout than Chrome mobile; and the expanded category drawer reduces the available catalog area.
+- The store viewer is not a product catalog UI built by Radar: it is a WebView of the official store. Do not attempt to hand-render page CSS or scrape images into the Radar cards as a workaround.
+
+### Store viewer repair plan
+1. Remove the forced `document.documentElement/body width and max-width` injection first; keep only a standards-based viewport meta injection when absent, and avoid overwriting an existing viewport tag.
+2. Do not strip WebView UA tokens without a controlled comparison. Test default Android WebView UA vs current UA and log only the chosen mode, not personal data.
+3. Reset the store viewer to the mobile category landing page with the category drawer closed (where the site's own UI permits); don't force-click selectors that may change or bypass protections.
+4. Keep WebView at natural responsive dimensions. Test `useWideViewPort` and `loadWithOverviewMode` as a pair in separate builds; do not use zoom as a permanent CSS repair.
+5. Add visual smoke test on a 393dp/412dp wide emulator: menu closed, at least one offer card visible at natural width, image/title/price not clipped, no card rendered as narrow vertical strips. Then verify Xiaomi screenshot manually.
+6. Store tab error/loading overlays must not cover content after load; on navigation failure show retry but preserve page if loaded.
+
+### Separation of defects
+- Worker cancellation: foreground/background WebView lifecycle and JavaScript catalog readiness.
+- Store-tab artifacts: viewport/CSS/user-agent responsive layout.
+These should be fixed and tested independently.
