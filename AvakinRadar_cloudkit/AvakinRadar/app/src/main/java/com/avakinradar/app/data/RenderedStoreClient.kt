@@ -97,7 +97,32 @@ class RenderedStoreClient(context: Context) {
                     webView.settings.allowContentAccess = false
                     webView.settings.textZoom = 100
                     webView.webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                            val uri = request?.url ?: return true
+                            if (!request.isForMainFrame) return false
+                            val allowed = uri.scheme.equals("https", true) &&
+                                uri.host.equals("store.avakin.com", true) &&
+                                (uri.port == -1 || uri.port == 443)
+                            if (allowed) return false
+                            val message = "Переход главного документа за пределы официального HTTPS-магазина заблокирован."
+                            onEvent("navigation_blocked", message)
+                            finish(null, IOException(message))
+                            return true
+                        }
+
                         override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                            if (url != null) {
+                                val uri = runCatching { java.net.URI(url) }.getOrNull()
+                                val allowed = uri?.scheme.equals("https", true) &&
+                                    uri?.host.equals("store.avakin.com", true) &&
+                                    (uri?.port == -1 || uri?.port == 443)
+                                if (!allowed) {
+                                    val message = "WebView начал переход за пределы официального HTTPS-магазина; загрузка остановлена."
+                                    onEvent("navigation_blocked", message)
+                                    finish(null, IOException(message))
+                                    return
+                                }
+                            }
                             onEvent("webview_started", "Android WebView начал загрузку публичной страницы.")
                         }
 
@@ -159,7 +184,7 @@ class RenderedStoreClient(context: Context) {
                     if (redirect == MAX_REDIRECTS) throw IOException("Магазин перенаправил запрос слишком много раз.")
                     val location = connection.getHeaderField("Location") ?: throw IOException("HTTP $code: сервер не указал адрес перенаправления.")
                     val next = URL(address, location)
-                    if (next.protocol != "https" || !next.host.equals("store.avakin.com", true)) {
+                    if (next.protocol != "https" || !next.host.equals("store.avakin.com", true) || (next.port != -1 && next.port != 443)) {
                         throw IOException("Магазин перенаправил запрос за пределы store.avakin.com; проверка остановлена.")
                     }
                     address = next
