@@ -61,9 +61,12 @@ class OfferCheckPipeline(
             onPhase("Сравниваю каталог с предыдущим снимком…")
             store.appendEvent(CheckEvent(timestamp, "comparison_started", "Сравниваю SKU и содержимое карточек с последним успешным снимком."))
             val changes = OfferDiff.compare(previous, current, timestamp)
-            val added = if (previous == null) current.size else changes.count { it.type == ChangeType.NEW }
+            val isBaseline = previous.isNullOrEmpty()
+            // The first successful scan is a baseline, not an alert-worthy batch of "new" offers.
+            val added = if (isBaseline) 0 else changes.count { it.type == ChangeType.NEW }
             val changed = changes.count { it.type == ChangeType.PRICE_CHANGED || it.type == ChangeType.CONTENT_CHANGED }
             val removed = changes.count { it.type == ChangeType.REMOVED }
+            val unchanged = if (isBaseline) current.size else (current.size - added - changed).coerceAtLeast(0)
             val summary = CheckSummary(
                 checkedAt = timestamp,
                 state = CheckState.SUCCEEDED,
@@ -71,7 +74,7 @@ class OfferCheckPipeline(
                 newCount = added,
                 changedCount = changed,
                 removedCount = removed,
-                unchangedCount = (current.size - added - changed).coerceAtLeast(0),
+                unchangedCount = unchanged,
                 workId = workId
             )
             store.appendEvent(CheckEvent(timestamp, "comparison_completed", "Сравнение завершено: новых $added, изменённых $changed, исчезнувших $removed."))
