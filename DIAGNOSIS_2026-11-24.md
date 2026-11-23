@@ -51,3 +51,27 @@ Only the public official store is used. No account sign-in, cookies, CAPTCHA/acc
 - Worker cancellation: foreground/background WebView lifecycle and JavaScript catalog readiness.
 - Store-tab artifacts: viewport/CSS/user-agent responsive layout.
 These should be fixed and tested independently.
+
+
+## Code review after independent review (main branch, 2026-11-24)
+
+### Confirmed in source
+- `MonitorWorker.doWork()` catches `CancellationException`, writes a generic failure summary/event, and rethrows cancellation. It does not log Android's WorkManager stop reason. UI can show `WorkInfo.stopReason` only for API 31+ and currently maps common stop codes, but no worker-side diagnostic is persisted.
+- `RenderedStoreClient` creates a new `WebView(appContext)` inside `Dispatchers.Main.immediate` without attaching it to a window/view hierarchy. It waits for `onPageFinished`, then polls `document.documentElement.outerHTML` every 1.5s, for 40s after a 4s initial delay; outer timeout 70s. This confirms hidden/unattached WebView design, though not the exact cancellation cause.
+- RenderedStoreClient strips `; wv` and `Version/4.0 ` from default WebView UA, then assigns the modified UA. Store-tab WebView does the same. This is a controlled variable worth removing for the responsive layout test.
+- Store-tab `onPageFinished` forcibly changes viewport meta content and sets html/body width and max-width. This is confirmed code and a high-priority experiment for the narrow-strip rendering defect.
+- Store-tab currently sets `useWideViewPort=true`, `loadWithOverviewMode=false`, `textZoom=100`; it does not set initial scale. Thus Claude's suggestion not to add an initial scale is appropriate.
+- `MonitorScheduler.enqueueManual` uses `ExistingWorkPolicy.REPLACE` for unique manual work. A new manual request replaces/cancels an earlier one; this may be expected but is a cancellation source if requests are duplicated. Periodic scheduling uses `ExistingPeriodicWorkPolicy.UPDATE`; it does not REPLACE on activity launch.
+- The worker's foreground notification is configured. Foreground service does not make the hidden WebView visible/attached.
+
+### Review of Claude's proposed scanner code
+- The architectural direction (visible WebView manual scan) is sound.
+- The sample selectors `[data-testid="item-card"]` and sample `HTML_JS` are placeholders; the current parser recognizes Xsolla `article.avsp-card[data-sku]` and also heuristic HTML/JSON-LD. Use a real card-ready signal based on the parser's known selectors, but verify current DOM before relying on them.
+- The sample should handle `onReceivedError`, main-frame HTTP errors, allowed-host navigation, renderer death and lifecycle/cancellation cleanup; it currently only sketches renderer death and timeout.
+- Don't return `NeedsBrowser` merely after a timeout without distinguishing network error, renderer failure, cancellation and a JS shell. Preserve existing snapshots in all non-success cases.
+
+### Immediate low-risk changes proposed
+1. Remove Store-tab UA modification and viewport/body width/max-width injection, preserving an existing viewport tag; do not force a new viewport if present.
+2. Add worker-side diagnostic logging/persisted stop reason without swallowing cancellation.
+3. Instrument RenderedStoreClient with renderer-death callback, stage timings, and cancellation cleanup; avoid content/personal data in logs.
+4. Run existing live-catalog emulator instrumentation before replacing scan architecture.
