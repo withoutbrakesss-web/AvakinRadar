@@ -1,9 +1,11 @@
 package com.avakinradar.app.monitor
 
 import android.content.Context
+import android.os.Build
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import androidx.work.WorkInfo
 import androidx.work.workDataOf
 import com.avakinradar.app.data.OfferCheckPipeline
 import com.avakinradar.app.data.CheckEvent
@@ -37,13 +39,27 @@ class MonitorWorker(context: Context, parameters: WorkerParameters) : CoroutineW
             Result.success()
         } catch (cancelled: CancellationException) {
             val stoppedAt = System.currentTimeMillis()
+            val stopReasonCode = if (Build.VERSION.SDK_INT >= 31) this.stopReason else null
+            val stopReasonLabel = stopReasonCode?.let { code ->
+                when (code) {
+                    WorkInfo.STOP_REASON_USER -> "пользователь или системная отмена"
+                    WorkInfo.STOP_REASON_BACKGROUND_RESTRICTION -> "ограничение фоновой работы"
+                    WorkInfo.STOP_REASON_QUOTA -> "лимит фоновых задач"
+                    WorkInfo.STOP_REASON_DEVICE_STATE -> "состояние устройства или Doze"
+                    WorkInfo.STOP_REASON_TIMEOUT -> "таймаут WorkManager"
+                    WorkInfo.STOP_REASON_CONSTRAINT_CONNECTIVITY -> "ограничение сети"
+                    else -> "неизвестная причина Android"
+                }
+            } ?: "stopReason недоступен на этой версии Android"
+            val reason = stopReasonCode?.let { "stopReason=$it ($stopReasonLabel)" } ?: stopReasonLabel
+            val message = "Задача проверки остановлена Android до получения результата ($reason, попытка ${runAttemptCount + 1}). Попробуйте запустить её ещё раз."
             repository.saveFailure(CheckSummary(
                 checkedAt = stoppedAt,
                 state = CheckState.FAILED,
-                error = "Задача проверки была остановлена Android до получения результата. Попробуйте запустить её ещё раз.",
+                error = message,
                 workId = id.toString()
             ))
-            repository.appendEvent(CheckEvent(stoppedAt, "worker_stopped", "WorkManager отменил выполнение до сохранения результата."))
+            repository.appendEvent(CheckEvent(stoppedAt, "worker_stopped", "WorkManager отменил выполнение: $reason."))
             throw cancelled
         } catch (error: Exception) {
             // This covers persistence/worker-level errors that happened outside the pipeline.

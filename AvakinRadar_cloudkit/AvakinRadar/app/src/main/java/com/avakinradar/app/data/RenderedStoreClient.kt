@@ -1,10 +1,13 @@
 package com.avakinradar.app.data
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -42,6 +45,8 @@ class RenderedStoreClient(context: Context) {
                 suspendCancellableCoroutine { continuation ->
                     val webView = WebView(appContext)
                     val finished = AtomicBoolean(false)
+                    val pollStarted = AtomicBoolean(false)
+                    val mainHandler = Handler(Looper.getMainLooper())
                     val startedAt = SystemClock.elapsedRealtime()
 
                     if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
@@ -58,6 +63,7 @@ class RenderedStoreClient(context: Context) {
 
                     fun finish(offers: List<StoreOffer>?, error: Throwable?) {
                         if (!finished.compareAndSet(false, true)) return
+                        mainHandler.removeCallbacksAndMessages(null)
                         webView.stopLoading()
                         webView.webViewClient = WebViewClient()
                         webView.destroy()
@@ -80,7 +86,7 @@ class RenderedStoreClient(context: Context) {
                                 onEvent("parse_failed", message)
                                 finish(null, IOException(message))
                             } else {
-                                webView.postDelayed(::inspectRenderedPage, POLL_INTERVAL_MS)
+                                mainHandler.postDelayed(::inspectRenderedPage, POLL_INTERVAL_MS)
                             }
                         }
                     }
@@ -129,8 +135,17 @@ class RenderedStoreClient(context: Context) {
                         override fun onPageFinished(view: WebView?, url: String?) {
                             if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
                                 onEvent("webview_loaded", "Главный документ магазина загружен в WebView; жду отрисовку JavaScript-каталога.")
-                                view?.postDelayed(::inspectRenderedPage, INITIAL_RENDER_WAIT_MS)
+                                if (pollStarted.compareAndSet(false, true)) {
+                                    mainHandler.postDelayed(::inspectRenderedPage, INITIAL_RENDER_WAIT_MS)
+                                }
                             }
+                        }
+
+                        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                            val message = "Процесс WebView завершён Android (crash=${detail.didCrash()}); проверка остановлена."
+                            onEvent("renderer_gone", message)
+                            finish(null, IOException(message))
+                            return true
                         }
 
                         override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
@@ -151,9 +166,11 @@ class RenderedStoreClient(context: Context) {
                     }
                     onEvent("webview_requested", "Открываю магазин в отдельном WebView-профиле без cookies.")
                     continuation.invokeOnCancellation {
-                        webView.post {
+                        mainHandler.post {
                             if (finished.compareAndSet(false, true)) {
+                                mainHandler.removeCallbacksAndMessages(null)
                                 webView.stopLoading()
+                                webView.webViewClient = WebViewClient()
                                 webView.destroy()
                             }
                         }
