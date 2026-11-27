@@ -177,8 +177,7 @@ private fun RadarApp(onEnableMonitoring: () -> Unit) {
         }
     }
     LaunchedEffect(queueWaiting, queueWaitStartedAt) {
-        while (queueWaiting) {
-            delay(5_000)
+        while (queueWaiting) {            delay(5_000)
             queueWaitSeconds = ((System.currentTimeMillis() - queueWaitStartedAt) / 1_000).toInt()
         }
     }
@@ -357,8 +356,7 @@ private fun Overview(
                 Text(if (status.lastSuccessAt == null) "—" else "${offers.size}", color = Blue, fontWeight = FontWeight.Bold)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                listOf("Все", "Валюта", "Акции").forEach { option ->
-                    FilterChip(selected = selectedFilter == option, onClick = { selectedFilter = option }, label = { Text(option) })
+                listOf("Все", "Валюта", "Акции").forEach { option ->                    FilterChip(selected = selectedFilter == option, onClick = { selectedFilter = option }, label = { Text(option) })
                 }
             }
         }
@@ -537,8 +535,7 @@ private fun SettingSwitch(title: String, checked: Boolean, onCheckedChange: (Boo
 
 @Composable
 private fun StoreScreen(webView: WebView, url: String, loading: Boolean, error: String?, onBack: () -> Unit) {
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().background(CardColor), verticalAlignment = Alignment.CenterVertically) {
+    Column(Modifier.fillMaxSize()) {        Row(Modifier.fillMaxWidth().background(CardColor), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = Color.White) }
             Text("Магазин Avakin", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
             if (loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Violet)
@@ -612,10 +609,9 @@ private fun configureWebView(context: Context, webView: WebView, onLoading: (Boo
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
+            // Let the official storefront control its own responsive layout.
+            // Avoid forcing document/body widths: this can collapse product grids in portrait.
             onLoading(false)
-            if (url?.startsWith("https://store.avakin.com/", ignoreCase = true) == true) {
-                view?.evaluateJavascript("""(function(){var m=document.querySelector('meta[name=viewport]');if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}m.content='width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes, viewport-fit=cover';document.documentElement.style.width='100%';document.documentElement.style.maxWidth='100vw';document.body.style.width='100%';document.body.style.maxWidth='100vw';})()""", null)
-            }
         }
 
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: android.webkit.WebResourceError?) {
